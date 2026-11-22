@@ -1,3 +1,4 @@
 # Ziv runtime data (memory.db, input_history, checkpoints) — session-local,
 # never versioned. agent/.gitignore covers agent/.ziv; this covers the root.
 .ziv/
+.DS_Store
