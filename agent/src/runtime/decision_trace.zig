@@ -157,7 +157,7 @@ pub const DecisionTrace = struct {
 /// 同位数下字典序即时间序)降序保留最近 keep 份,其余删除。启动时清一
 /// 次存量、每回合写入后再清增量。返回删除数(供日志;0 = 无事)。
 /// 单文件删除失败吞掉——遥测清理不许破坏回合。
-pub const TRACES_KEEP: usize = 400;
+pub const TRACES_KEEP: usize = 500;
 
 pub fn pruneTraces(io: std.Io, dir_path: []const u8, keep: usize, alloc: std.mem.Allocator) usize {
     const d: std.Io.Dir = .cwd();
