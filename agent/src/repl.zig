@@ -883,6 +883,11 @@ pub fn run(io: std.Io, stdin_file: std.Io.File, stdout_file: std.Io.File) !void 
         // （主线程 DB 写；一次一份，小步走）。
         if (mem_sys) |*ms| {
             memory_ops.collectPendingExtraction(ms, if (kgraph) |*g| g else null, &evbus, w, allocator, io);
+            // B2（2026-11-22）：补位 spawn——上一份 worker 结束后此处取
+            // 下一份，会话期间逐步清积压（busy 闸防重；仅主线程调用）。
+            if (memory_ops.backgroundLlmConfig(allocator, &switcher)) |cfg| {
+                memory_ops.spawnPendingExtraction(cfg, allocator, io);
+            }
         }
 
         // Hot-reload: a settings file changed on disk since the last prompt

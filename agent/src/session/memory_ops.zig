@@ -814,8 +814,9 @@ const zivroot = @import("../util/zivroot.zig");
 fn pendingDir(buf: []u8) []const u8 {
     return zivroot.sub(buf, "pending_extract");
 }
-/// 存档上限：最新 2 份——网关长期不可用时最老的被挤掉（有界放弃）。
-const PENDING_KEEP: usize = 2;
+/// 存档上限（2026-11-22 RCA 2→8）：纯文本几 KB/份——曾只留 2 份且启动
+/// 只提 1 份，连续开关会话 3+ 次必然挤掉未提取的转录（LLM 深度记忆丢）。
+const PENDING_KEEP: usize = 8;
 
 /// 退出路径：转录落盘排队（毫秒级）。返回 true = 已排队。
 pub fn deferSessionExtraction(alloc: std.mem.Allocator, io: std.Io, history: []const llm.Message, w: ?*std.Io.Writer) bool {
@@ -900,7 +901,13 @@ const PendingWorkerCtx = struct {
 /// 启动路径：有存档则分离线程补提（own io/provider，B-pattern）。
 /// 成功 → 模型原始回复写 <stem>.reply、删 .txt；失败 → 保留 .txt
 /// 下次启动重试（网关不可达的常态容忍，PENDING_KEEP 兜底有界）。
+/// B2（2026-11-22 RCA）：busy 原子闸——worker 在飞时新调用直接返回；
+/// repl 提示符循环每轮补位 spawn（老设计启动只提 1 份,吞吐追不上连续
+/// 退出,积压被 prune 挤掉 = LLM 记忆丢）。仅主线程调用（scratch 安全）。
+var pending_worker_busy = std.atomic.Value(bool).init(false);
+
 pub fn spawnPendingExtraction(cfg: BackgroundLlmConfig, alloc: std.mem.Allocator, io: std.Io) void {
+    if (pending_worker_busy.load(.acquire)) return;
     name_scratch_n = 0; // 复用槽位（仅主线程调用）
     var pdir_buf: [std.fs.max_path_bytes]u8 = undefined;
     var dir = std.Io.Dir.cwd().openDir(io, pendingDir(&pdir_buf), .{}) catch return;
@@ -935,6 +942,7 @@ pub fn spawnPendingExtraction(cfg: BackgroundLlmConfig, alloc: std.mem.Allocator
         alloc.destroy(ctx);
         return;
     };
+    pending_worker_busy.store(true, .release);
     th.detach();
 }
 
@@ -944,6 +952,7 @@ fn pendingWorker(ctx: *PendingWorkerCtx) void {
         alloc.free(@constCast(ctx.txt_path));
         alloc.free(@constCast(ctx.reply_path));
         alloc.destroy(ctx);
+        pending_worker_busy.store(false, .release); // B2:闸门放行下一份
     }
     var io_state = std.Io.Threaded.init(alloc, .{});
     defer io_state.deinit();
@@ -961,7 +970,8 @@ fn pendingWorker(ctx: *PendingWorkerCtx) void {
     const reply_text = llmExtractReplyText(alloc, prov, body, 2048) catch return; // 失败留 .txt
     defer alloc.free(reply_text);
     std.Io.Dir.cwd().writeFile(io2, .{ .sub_path = ctx.reply_path, .data = reply_text }) catch return;
-    std.Io.Dir.cwd().deleteFile(io2, ctx.txt_path) catch {};
+    // B3（2026-11-22）：.txt 不在此删——留作解析失败时的重提原料；主
+    // 线程 collect 落库成功才删（.reply 覆盖写,重复提取幂等无害）。
     logger.info("pending extraction: reply archived ({d}B), main thread will ingest", .{reply_text.len});
 }
 
@@ -994,9 +1004,31 @@ pub fn collectPendingExtraction(
     const reply = std.Io.Dir.cwd().readFileAlloc(io, rpath, alloc, .limited(64 * 1024)) catch return;
     defer alloc.free(reply);
     const parsed = parseExtractionReply(alloc, reply) catch {
-        // 模型输出反复不可解析：放弃这一份（删 reply），不留死循环。
-        std.Io.Dir.cwd().deleteFile(io, rpath) catch {};
-        logger.info("pending extraction: unparseable reply dropped", .{});
+        // B3（2026-11-22 RCA）：兑现"反复重试"——单次失败即弃曾让格式
+        // 漂移的模型输出整份丢。.txt 留着（worker 会重提、模型可能换格
+        // 式回）；<stem>.fails 计数，第 3 次才真放弃（删三者防死循环）。
+        var fbuf: [std.fs.max_path_bytes]u8 = undefined;
+        var fb2: [std.fs.max_path_bytes]u8 = undefined;
+        const stem = name[0 .. name.len - ".reply".len];
+        const fails_path = std.fmt.bufPrint(&fbuf, "{s}/{s}.fails", .{ pendingDir(&fb2), stem }) catch return;
+        var fails: u8 = 0;
+        if (std.Io.Dir.cwd().readFileAlloc(io, fails_path, alloc, .limited(16))) |fc| {
+            defer alloc.free(fc);
+            fails = std.fmt.parseInt(u8, std.mem.trim(u8, fc, " \n\r\t"), 10) catch 0;
+        } else |_| {}
+        if (fails >= 2) {
+            var tb: [std.fs.max_path_bytes]u8 = undefined;
+            const tpath = std.fmt.bufPrint(&tb, "{s}/{s}.txt", .{ pendingDir(&fb2), stem }) catch return;
+            std.Io.Dir.cwd().deleteFile(io, rpath) catch {};
+            std.Io.Dir.cwd().deleteFile(io, tpath) catch {};
+            std.Io.Dir.cwd().deleteFile(io, fails_path) catch {};
+            logger.info("pending extraction: unparseable ×{d} — dropped", .{fails + 1});
+            return;
+        }
+        const fc = std.fmt.allocPrint(alloc, "{d}", .{fails + 1}) catch return;
+        defer alloc.free(fc);
+        std.Io.Dir.cwd().writeFile(io, .{ .sub_path = fails_path, .data = fc }) catch {};
+        logger.info("pending extraction: unparseable reply (attempt {d}/3, kept .txt for retry)", .{fails + 1});
         return;
     };
     // OWNERSHIP HANDOFF, like the :320 / :1099 callers: applyLlmExtraction
@@ -1008,6 +1040,16 @@ pub fn collectPendingExtraction(
     const out = parsed;
     applyLlmExtraction(mem, kg, bus, w.?, out) catch return;
     std.Io.Dir.cwd().deleteFile(io, rpath) catch {};
+    // B3：落库成功才删 .txt（重试原料）与 .fails。
+    var tb2: [std.fs.max_path_bytes]u8 = undefined;
+    var tb3: [std.fs.max_path_bytes]u8 = undefined;
+    if (name.len > ".reply".len) {
+        const stem = name[0 .. name.len - ".reply".len];
+        const tpath = std.fmt.bufPrint(&tb2, "{s}/{s}.txt", .{ pendingDir(&tb3), stem }) catch return;
+        std.Io.Dir.cwd().deleteFile(io, tpath) catch {};
+        const fpath = std.fmt.bufPrint(&tb2, "{s}/{s}.fails", .{ pendingDir(&tb3), stem }) catch return;
+        std.Io.Dir.cwd().deleteFile(io, fpath) catch {};
+    }
     if (w) |ww| {
         std.Io.Writer.print(ww, "  \x1b[2m[上次会话的记忆提取已完成并入库]\x1b[0m\n", .{}) catch {};
     }

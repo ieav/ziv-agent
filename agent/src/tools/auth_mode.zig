@@ -133,7 +133,11 @@ pub fn checkToolPermission(
         .bypass => return .allow,
         .plan => {
             if (!tool.isReadOnly(input)) {
-                return .{ .deny = .{ .message = "write operation blocked in plan mode" } };
+                // 指路式拒绝(2026-11-22 用户事故:模型在 plan 模式硬冲
+                // FileEdit ×6 连拒"饥饿")——只说不行不说出路,模型只会
+                // 换姿势再冲。出路是 plan_approve 呈批:批准后自动切出
+                // plan 才能动写。绝不自动放行/自动切 bypass(权限自提升)。
+                return .{ .deny = .{ .message = "write operations are blocked in plan mode. Do NOT retry writes. Call the plan_approve tool to present your plan to the user; once approved the session leaves plan mode and writes are allowed" } };
             }
             return .allow;
         },
