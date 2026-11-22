@@ -832,7 +832,9 @@ pub fn deferSessionExtraction(alloc: std.mem.Allocator, io: std.Io, history: []c
     const path = std.fmt.bufPrint(&name_buf, "{s}/{d}.txt", .{ pendingDir(&pd_buf), util_time.nowMillis() }) catch return false;
     const body = std.fmt.allocPrint(alloc, "{s}", .{tr}) catch return false;
     defer alloc.free(body);
-    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = body }) catch return false;
+    // 原子落盘(2026-11-22 RCA 场景 6 收尾):退出瞬间崩溃在 truncate+写
+    // 中间会留下半截转录,补提解析失败白占 fails 重试配额。
+    @import("../util/fs_ops.zig").writeFileAtomic(io, path, body, alloc) catch return false;
     if (w) |ww| {
         std.Io.Writer.print(ww, "  [会话转录已存档——LLM 提取转入下次启动后台执行，退出不再等待]\n", .{}) catch {};
     }

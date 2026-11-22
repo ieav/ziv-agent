@@ -121,3 +121,32 @@ test "ensureDir" {
     defer io_state.deinit();
     std.Io.Dir.cwd().deleteTree(io_state.io(), tmp) catch {};
 }
+
+/// 原子落盘(F2,2026-11-20;2026-11-22 提公用):同目录 tmp + rename。
+/// truncate+整写期间并发读者会读到半截(加载侧 `parse catch return`
+/// 静默丢整层);rename 后读者要么全旧要么全新。tmp 显式 0600(rename
+/// 后即最终权限,带密钥的文件不落默认 0644)。与同文件其它一次性工具
+/// 不同,本函数接受调用方 io——调用点均在持 io 的路径上,省线程起停。
+/// 写败/rename 败原样上抛,残留 .tmp 尽力清理。
+pub fn writeFileAtomic(io: std.Io, path: []const u8, data: []const u8, alloc: std.mem.Allocator) !void {
+    const tmp = try std.fmt.allocPrint(alloc, "{s}.tmp", .{path});
+    defer alloc.free(tmp);
+    std.Io.Dir.writeFile(std.Io.Dir.cwd(), io, .{
+        .sub_path = tmp,
+        .data = data,
+        .flags = .{
+            .permissions = if (@import("builtin").os.tag == .windows)
+                .default_file
+            else
+                @enumFromInt(0o600),
+        },
+    }) catch |err| {
+        std.Io.Dir.cwd().deleteFile(io, tmp) catch {};
+        return err;
+    };
+    const cwd = std.Io.Dir.cwd();
+    cwd.rename(tmp, cwd, path, io) catch |err| {
+        std.Io.Dir.cwd().deleteFile(io, tmp) catch {};
+        return err;
+    };
+}

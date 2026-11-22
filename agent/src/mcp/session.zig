@@ -356,6 +356,10 @@ fn nextCursor(result_v: std.json.Value) ?[]const u8 {
 pub fn bridgeSessionTools(
     session: *McpSession,
     reg: *runtime_registry.RuntimeRegistry,
+    /// 信任服务器自宣 readOnlyHint(settings.mcp_trust_readonly_hint,
+    /// 默认 false——hint 不可审计,default 模式维持 ask 门;true 时
+    /// RO-hint 工具按只读放行,plan 模式可用)。
+    trust_readonly_hint: bool,
 ) !void {
     const prefix = try std.fmt.allocPrint(reg.allocator, "mcp__{s}__", .{session.name});
     defer reg.allocator.free(prefix);
@@ -368,12 +372,11 @@ pub fn bridgeSessionTools(
         tc.* = .{ .session = session, .tool_name = try session.allocator.dupe(u8, tool_name) };
         try session.trampolines.append(session.allocator, tc);
 
-        // 复审 🔴2（2026-11-19）：read_only 恒传 false。readOnlyHint 是
-        // 服务器自宣（上方注释：Unverified claim）——若采信，default 模式
-        // Step 2a 会按 isReadOnly 直接放行，绕过 ask 门（"MCP tools are
-        // unauditable → the permission gate asks" 的既有态势被静默翻成
-        // fail-open）。并发标志仍取 hint：并行安全与授权宽窄是两回事。
-        try reg.registerDynamic(full, meta.description, meta.schema, trampoline, tc, meta.read_only, false);
+        // 🔴2（2026-11-19）→ 开关化（2026-11-22）：readOnlyHint 是服务
+        // 器自宣（Unverified claim），默认不采信——default 模式维持 ask
+        // 门；settings.mcp_trust_readonly_hint=true 才按只读放行（重连
+        // 生效）。并发标志仍取 hint：并行安全与授权宽窄是两回事。
+        try reg.registerDynamic(full, meta.description, meta.schema, trampoline, tc, meta.read_only, trust_readonly_hint and meta.read_only);
     }
 }
 

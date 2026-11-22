@@ -791,7 +791,7 @@ pub fn run(io: std.Io, stdin_file: std.Io.File, stdout_file: std.Io.File) !void 
         };
         for (mcp_cfg.servers.items) |*entry| {
             if (!entry.enabled) continue;
-            connectMcpServer(entry, &mcp_sessions, &reg, allocator, io, w, &file_writer, autostart_timeout) catch |err| {
+            connectMcpServer(entry, &mcp_sessions, &reg, allocator, io, w, &file_writer, autostart_timeout, switcher.settings.mcp_trust_readonly_hint) catch |err| {
                 logger.warning("mcp autostart {s}: {}", .{ entry.name, err });
             };
         }
@@ -2488,6 +2488,8 @@ pub fn connectMcpServer(
     /// 短预算：挂起的 server 拖住的是每一次冷启动（实测 20.7s 才出
     /// 提示符），3s 是「等一个正常 server 起来」的合理上限。
     handshake_timeout_ms: u32,
+    /// 信任服务器自宣 readOnlyHint（settings.mcp_trust_readonly_hint）。
+    trust_readonly_hint: bool,
 ) !void {
     if (findMcpSession(sessions.items, entry.name)) |existing| {
         if (existing.connected) {
@@ -2540,7 +2542,7 @@ pub fn connectMcpServer(
         sess.disconnect(io);
         return error.OutOfMemory;
     };
-    mcp_mod.session.bridgeSessionTools(sess, reg) catch {};
+    mcp_mod.session.bridgeSessionTools(sess, reg, trust_readonly_hint) catch {};
     logger.info("mcp: {s} connected ({d} tools bridged)", .{ entry.name, sess.tool_names.items.len });
     try std.Io.Writer.print(w, "  {s} connected: {d} tools available as mcp__{s}__*\n\n", .{ entry.name, sess.tool_names.items.len, entry.name });
     try std.Io.File.Writer.flush(file_writer);

@@ -262,7 +262,7 @@ pub fn dispatchSlash(ctx: *ReplCtx, input_orig: []const u8) !DispatchOutcome {
                     try std.Io.File.Writer.flush(ctx.file_writer);
                     return .handled;
                 };
-                try repl_mod.connectMcpServer(entry, ctx.mcp_sessions, ctx.reg, allocator, ctx.io, ctx.w, ctx.file_writer, 0);
+                try repl_mod.connectMcpServer(entry, ctx.mcp_sessions, ctx.reg, allocator, ctx.io, ctx.w, ctx.file_writer, 0, ctx.switcher.settings.mcp_trust_readonly_hint);
             } else if (std.mem.startsWith(u8, rest_mcp, "disconnect ")) {
                 const want = std.mem.trim(u8, rest_mcp[11..], " \t");
                 if (repl_mod.findMcpSession(ctx.mcp_sessions.items, want)) |sess| {

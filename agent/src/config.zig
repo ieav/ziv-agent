@@ -4,6 +4,7 @@
 /// (The session/cli_args tiers from the original design were never built.)
 const std = @import("std");
 const system_dirs = @import("util/system_dirs.zig");
+const fs_ops = @import("util/fs_ops.zig");
 const json_helpers = @import("util/json_helpers.zig");
 const auth_mode = @import("tools/auth_mode.zig");
 const env_mod = @import("util/env.zig");
@@ -24,6 +25,11 @@ pub const Settings = struct {
     /// MCP 启动自动连接（2026-11-10：配置了就该连上，不该让人再敲
     /// /mcp connect）。ZIV_MCP_AUTOSTART=0 可关。
     mcp_autostart: bool = true,
+    /// 信任 MCP 服务器自宣的 readOnlyHint(默认 false,2026-11-22):
+    /// true 时 RO-hint 的 MCP 工具在 default/plan 模式按只读放行;
+    /// false 时一律走 ask 门(hint 是服务器自宣、不可审计)。改动需
+    /// 重连 MCP 会话生效(注册时读取)。
+    mcp_trust_readonly_hint: bool = false,
     /// 输出风格（Concise Output Style）：default = 现行为；concise =
     /// 结果优先（省略开场白/过程叙述/结尾复述）。非法值回落 default。
     output_style: []const u8 = "default",
@@ -231,6 +237,9 @@ fn loadJsonIntoSettings(settings: *Settings, allocator: std.mem.Allocator, io: s
     }
     if (json_helpers.getBool(value, "mcp_autostart")) |ma| {
         settings.mcp_autostart = ma;
+    }
+    if (json_helpers.getBool(value, "mcp_trust_readonly_hint")) |t| {
+        settings.mcp_trust_readonly_hint = t;
     }
     if (json_helpers.getString(value, "output_style")) |os| {
         if (@import("system_prompt.zig").styleValid(os)) {
@@ -548,6 +557,7 @@ pub fn saveSettings(settings: *const Settings, allocator: std.mem.Allocator, io:
     // checkpointing_enabled
     buf.print(allocator, "  \"checkpointing_enabled\": {},\n", .{settings.checkpointing_enabled}) catch {};
     buf.print(allocator, "  \"mcp_autostart\": {},\n", .{settings.mcp_autostart}) catch {};
+    buf.print(allocator, "  \"mcp_trust_readonly_hint\": {},\n", .{settings.mcp_trust_readonly_hint}) catch {};
     buf.print(allocator, "  \"output_style\": \"{s}\",\n", .{settings.output_style}) catch {};
     // permission_mode
     const mode_str = @tagName(settings.permission_mode);
@@ -611,37 +621,10 @@ pub fn saveSettings(settings: *const Settings, allocator: std.mem.Allocator, io:
     writeFileAtomic(io, path, buf.items, allocator) catch |err| return err;
 }
 
-/// settings.json 原子落盘(F2,2026-11-20):同目录 tmp + rename——
-/// truncate+整写期间并发读者(热重载/指纹扫描)会读到半截 JSON,加载
-/// 侧 `parse catch return` 静默丢整层。tmp 显式 0600(rename 后即最终
-/// 权限,API key 不落 0644)。
-fn writeFileAtomic(io: std.Io, path: []const u8, data: []const u8, alloc: std.mem.Allocator) !void {
-    const tmp = try std.fmt.allocPrint(alloc, "{s}.tmp", .{path});
-    defer alloc.free(tmp);
-    std.Io.Dir.writeFile(std.Io.Dir.cwd(), io, .{
-        .sub_path = tmp,
-        .data = data,
-        // 审查补丁（2026-11-20）：rename 替换后文件权限取 .tmp 的创建
-        // 默认（0o666 & ~umask ≈ 0644）——settings.json 含 API key，
-        // 0644 在多用户机器上是泄露面（dist 有 linux/windows 产物）。
-        // 显式 0600：仅属主读写，对既有文件也是收紧方向、从不放松。
-        // Windows 分支 Permissions 是文件属性位枚举，保持默认。
-        .flags = .{
-            .permissions = if (@import("builtin").os.tag == .windows)
-                .default_file
-            else
-                @enumFromInt(0o600),
-        },
-    }) catch |err| {
-        std.Io.Dir.cwd().deleteFile(io, tmp) catch {};
-        return err;
-    };
-    const cwd = std.Io.Dir.cwd();
-    cwd.rename(tmp, cwd, path, io) catch |err| {
-        std.Io.Dir.cwd().deleteFile(io, tmp) catch {};
-        return err;
-    };
-}
+/// settings.json 原子落盘(F2,2026-11-20)。实现 2026-11-22 提公用到
+/// util/fs_ops.writeFileAtomic(记忆转录落盘同款防半截需求)——tmp+rename
+/// 与 0600 的细节见彼处注释。
+const writeFileAtomic = fs_ops.writeFileAtomic;
 
 /// T2.2 学到的 allow 规则上限（2026-11-19）：防「a」无界膨胀。
 pub const LEARNED_RULES_CAP: usize = 200;

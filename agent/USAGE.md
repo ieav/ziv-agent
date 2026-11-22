@@ -653,6 +653,7 @@ comptime 泛型注册，零运行时开销。每个工具支持并发安全检�
 
 - 配置持久化于 `~/.config/ziv/mcp.json`；env 全量继承
 - **启动自动连接**（v0.9.0）：配置过的服务器冷启动即握手桥接（短预算 3s，`ZIV_MCP_AUTOSTART_TIMEOUT_MS` 可调；`mcp_autostart: false` 或 `ZIV_MCP_AUTOSTART=0` 关闭）——不用再手敲 `/mcp connect`
+- **readOnlyHint 权限**（2026-11-22 开关化）：MCP 工具的自宣 `readOnlyHint` **默认不采信**——所有 MCP 工具在 default 模式走 ask 门（hint 不可审计，防 fail-open）。`settings.json` 里 `"mcp_trust_readonly_hint": true` 可采信：RO-hint 工具按只读放行（default 免询、plan 模式可用）。**改动需重连 MCP 会话生效**（`/mcp connect` 或重启）
 - **npx stdio 形态已可用**（2026-11-10 根治）：`/mcp add <名> npx -y <包名>` 直接拉起。旧版两个根因已修——读循环丢弃 peek 残余（>4KB 的 tools/list 响应尾部丢失 → 握手卡死至看门狗超时）+ 深层 spawn 孤儿（SIGKILL 杀不到 npx 的 node 子进程，现按进程组治理）。实测 `@modelcontextprotocol/server-memory` 9 工具全桥接
 - **Playwright 接入**（真机已验收）：终端起服务 `npx -y @playwright/mcp@latest --port 18931`，`/mcp add playwright http://localhost:18931/mcp`（注意 `localhost`——服务默认监听 IPv6）
 
