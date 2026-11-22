@@ -1474,6 +1474,54 @@ def s26_plan_approve_rounds():
     return "四轮 1/2/3/Esc 决议正确,每轮两请求收束"
 
 
+
+
+def s27_plan_contract_on_wire():
+    """plan 模式契约注入(2026-11-22):每个用户回合随行 system-reminder
+    先于用户消息——模型被拒换姿势不转向 plan_approve 的事故根修。"""
+    import threading, http.server, json as _json, tempfile
+    seen = []
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            n = int(self.headers.get('Content-Length', 0))
+            body = _json.loads(self.rfile.read(n)) if n else {}
+            for m in body.get("messages", []):
+                c = m.get("content")
+                seen.append(c if isinstance(c, str) else _json.dumps(c, ensure_ascii=False))
+            self.send_response(200); self.send_header('Content-Type', 'text/event-stream'); self.end_headers()
+            self.wfile.write(f"data: {_json.dumps({'choices': [{'index': 0, 'delta': {'content': 'ok'}}]})}\n\n".encode())
+            self.wfile.write(f"data: {_json.dumps({'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}], 'usage': {'prompt_tokens': 5, 'completion_tokens': 1}})}\n\n".encode())
+            self.wfile.write(b"data: [DONE]\n\n")
+        def log_message(self, *a): pass
+
+    srv = http.server.HTTPServer(('127.0.0.1', 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    d = tempfile.mkdtemp(prefix="ziv-s27-")
+    z = ZivSession(reuse_dir=d, settings=_json.dumps({
+        "permission_mode": "plan",
+        "api_keys": {"openai": "sk-mock", "openai_base_url": f"http://127.0.0.1:{srv.server_address[1]}/v1"}}))
+    try:
+        z.wait_prompt()
+        z.send("hello\r")
+        z.read_until("完成", 60)
+        # 契约帧必须出现在 wire 上,且在用户消息之前(同一请求的 messages 序列里)
+        contract_idx = [i for i, c in enumerate(seen) if "You are in PLAN MODE" in c]
+        user_idx = [i for i, c in enumerate(seen) if "hello" in c]
+        if not contract_idx:
+            raise Fail(f"plan contract not on the wire; seen={len(seen)} frames")
+        if user_idx and min(contract_idx) > min(user_idx):
+            raise Fail("plan contract injected AFTER the user message")
+        # 三个契约要素齐全
+        frame = seen[contract_idx[0]]
+        for key in ("NEVER attempt writes", "plan_approve", "NOT approval"):
+            if key not in frame:
+                raise Fail(f"contract missing element: {key}")
+        return "契约帧在 wire 上且先于用户消息,三要素齐全"
+    finally:
+        quit_and_wait(z)
+
+
 SCENARIOS = [
     ("S1 raw-session", s1_raw_session),
     ("S2 midturn-keys", s2_midturn_keys),
@@ -1501,6 +1549,7 @@ SCENARIOS = [
     ("S24 slash-popup", s24_slash_popup),
     ("S25 mode/model args", s25_mode_model_args),
     ("S26 plan_approve rounds", s26_plan_approve_rounds),
+    ("S27 plan contract", s27_plan_contract_on_wire),
 ]
 
 

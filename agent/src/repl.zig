@@ -1101,6 +1101,27 @@ pub fn run(io: std.Io, stdin_file: std.Io.File, stdout_file: std.Io.File) !void 
             // T5.2 复审修正：Stop 续跑计数只在 readLine 真实键入时重置
             // （见下方 else 分支）。曾放在这里——续跑指令自身走 auto_submit
             // → 本分支 → 每次把自己计数清零，上限 2 形同虚设。
+            // plan 模式契约(2026-11-22 用户实测事故):模型对 deny 现场
+            // 指引的服从度撑不起行为转变——被拒后换姿势(FileEdit→Bash
+            // 探测)而不是转向 plan_approve。每个用户回合随行注入先验
+            // 契约(CC plan-mode reminder 同款):只调研、计划成即呈批、
+            // 聊天消息不算批准。
+            if (current_mode == .plan) {
+                const pb = try allocator.alloc(llm.ContentBlock, 1);
+                pb[0] = .{ .text = try allocator.dupe(u8,
+                    \\<system-reminder>
+                    \\You are in PLAN MODE. Contract:
+                    \\1. Research and read only — NEVER attempt writes/edits/exec that modify anything; blocked writes will not succeed no matter the tool or phrasing.
+                    \\2. When your plan is complete, call the plan_approve tool to present it. That is the ONLY exit: once the user approves, the session leaves plan mode and you execute immediately.
+                    \\3. The user's chat messages (e.g. "可以/执行/go ahead") are NOT approval — do not start writes based on them; present the plan via plan_approve instead.
+                    \\</system-reminder>
+                ) };
+                try history.append(allocator, .{
+                    .role = .user,
+                    .content = pb,
+                    .timestamp = util_time.nowMillis(),
+                });
+            }
             // T7 @引用：用户行里的 @path[:行域] 展开为随行文件内容帧
             // （只读喂料不设询问；读不动的文件标注跳过）。先于异步通知。
             if (at_ref.renderRefs(allocator, io, input)) |frame| {
