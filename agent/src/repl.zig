@@ -341,6 +341,13 @@ pub fn run(io: std.Io, stdin_file: std.Io.File, stdout_file: std.Io.File) !void 
     // 项目根锚定：main.zig 已在横幅处初始化（含继承提示）；此处幂等兜底
     // （直接单测调用 repl.run 的形态）。
     if (zivroot.rootLen() == 0) zivroot.init(io);
+    // T1(2026-11-22):traces 存量清理——每回合一文件默认开,只增不删
+    // 是长期运行的唯一无界磁盘增长点;启动清一次,回合尾写后再清增量。
+    {
+        var prb: [std.fs.max_path_bytes]u8 = undefined;
+        const n = decision_trace.pruneTraces(io, zivroot.sub(&prb, "traces"), decision_trace.TRACES_KEEP, allocator);
+        if (n > 0) logger.info("traces pruned {d} (keep {d})", .{ n, decision_trace.TRACES_KEEP });
+    }
     // T1.1 通知收件箱在启动期初始化——后续 waiter 线程的 pushNote 无
     // 惰性 init 竞争窗口。
     attachment.ensureInit();
@@ -2245,6 +2252,8 @@ pub fn run(io: std.Io, stdin_file: std.Io.File, stdout_file: std.Io.File) !void 
                     if (std.fmt.bufPrint(&path_b, "{s}/{d}.jsonl", .{ zivroot.sub(&tr2, "traces"), t.started_at })) |p| {
                         turn_clock.setTracePath(p);
                     } else |_| {}
+                    // T1:写后清增量(刚写的最新一份在保留窗内永不会被删)。
+                    _ = decision_trace.pruneTraces(io, zivroot.sub(&tr2, "traces"), decision_trace.TRACES_KEEP, allocator);
                 } else |e| {
                     logger.warning("trace persist failed: {}", .{e});
                 }

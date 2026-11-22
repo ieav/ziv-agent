@@ -140,7 +140,7 @@ tar xzf ziv-0.9.2-aarch64-macos.tar.gz && ./ziv-aarch64-macos
 | `.ziv/sessions.db` | 会话库（v0.8.0 起，/resume 恢复用，含未正常退出标记） |
 | `.ziv/index.db` | 代码索引（FTS5，v0.8.0 起；/stats 的 Code context 指标来自此） |
 | `.ziv/checkpoints/` | 文件快照（/rewind 回滚用，首次文件编辑时创建） |
-| `.ziv/traces/*.jsonl` | 回合决策链遥测（默认开，`ZIV_TRACE=0` 关闭，`/trace` 直读） |
+| `.ziv/traces/*.jsonl` | 回合决策链遥测（默认开，`ZIV_TRACE=0` 关闭，`/trace` 直读；**保留最近 200 份**，启动与每回合写入后自动逐出最老——T1 无界增长收口） |
 | `.ziv/tasks/<id>.log` | 后台任务输出全文（Bash `run_in_background:true` 启动的命令） |
 | `.ziv/skills/<名>/SKILL.md` | 项目级 Skill（覆盖同名全局 Skill） |
 | `.ziv/plan.md` | /plan 计划文件 |

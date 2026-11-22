@@ -152,6 +152,99 @@ pub const DecisionTrace = struct {
     }
 };
 
+/// T1(2026-11-22 资源审计):traces 每回合一文件、默认开、曾永不清理——
+/// 长期使用的唯一无界磁盘增长点。逐出式收口:按文件名(=毫秒时间戳,
+/// 同位数下字典序即时间序)降序保留最近 keep 份,其余删除。启动时清一
+/// 次存量、每回合写入后再清增量。返回删除数(供日志;0 = 无事)。
+/// 单文件删除失败吞掉——遥测清理不许破坏回合。
+pub const TRACES_KEEP: usize = 200;
+
+pub fn pruneTraces(io: std.Io, dir_path: []const u8, keep: usize, alloc: std.mem.Allocator) usize {
+    const d: std.Io.Dir = .cwd();
+    var dir = d.openDir(io, dir_path, .{ .iterate = true }) catch return 0;
+    defer dir.close(io);
+    var names: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (names.items) |n| alloc.free(n);
+        names.deinit(alloc);
+    }
+    var it = dir.iterate();
+    while (it.next(io) catch null) |e| {
+        if (e.kind != .file) continue;
+        if (!std.mem.endsWith(u8, e.name, ".jsonl")) continue;
+        names.append(alloc, alloc.dupe(u8, e.name) catch continue) catch continue;
+    }
+    if (names.items.len <= keep) return 0;
+    // 降序:最新在前,keep 之后全删。
+    std.mem.sort([]const u8, names.items, {}, struct {
+        fn before(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .gt;
+        }
+    }.before);
+    var deleted: usize = 0;
+    var pb: [std.fs.max_path_bytes]u8 = undefined;
+    for (names.items[keep..]) |n| {
+        const p = std.fmt.bufPrint(&pb, "{s}/{s}", .{ dir_path, n }) catch continue;
+        d.deleteFile(io, p) catch continue;
+        deleted += 1;
+    }
+    return deleted;
+}
+
+test "T1 pruneTraces: keeps newest N by timestamp name, no-op under cap" {
+    const a = std.testing.allocator;
+    var io_state = std.Io.Threaded.init(a, .{});
+    defer io_state.deinit();
+    const io = io_state.io();
+    const dir = ".zig-cache/t1-traces";
+    const d: std.Io.Dir = .cwd();
+    defer {
+        var cb: [std.fs.max_path_bytes]u8 = undefined;
+        var dir_h: ?std.Io.Dir = d.openDir(io, dir, .{ .iterate = true }) catch null;
+        if (dir_h) |*h| {
+            var it = h.iterate();
+            while (it.next(io) catch null) |e| {
+                if (e.kind != .file) continue;
+                const p = std.fmt.bufPrint(&cb, "{s}/{s}", .{ dir, e.name }) catch continue;
+                d.deleteFile(io, p) catch {};
+            }
+            h.close(io);
+        }
+        d.deleteDir(io, dir) catch {};
+    }
+    d.createDirPath(io, dir) catch return error.TestSetup;
+    // 5 份时间戳名(同位数,字典序=时间序)+ 1 个非 jsonl 干扰文件。
+    var nb: [64]u8 = undefined;
+    for (1..6) |i| {
+        const n = std.fmt.bufPrint(&nb, "{s}/179000000000{d}.jsonl", .{ dir, i }) catch unreachable;
+        d.writeFile(io, .{ .sub_path = n, .data = "{}" }) catch return error.TestSetup;
+    }
+    d.writeFile(io, .{ .sub_path = std.fmt.bufPrint(&nb, "{s}/noise.txt", .{dir}) catch unreachable, .data = "x" }) catch return error.TestSetup;
+
+    // ≤keep:no-op。
+    try std.testing.expectEqual(@as(usize, 0), pruneTraces(io, dir, 10, a));
+    // keep=2:删最老 3 份,留最新 2;noise.txt 不受影响。
+    try std.testing.expectEqual(@as(usize, 3), pruneTraces(io, dir, 2, a));
+    var dir_h = try d.openDir(io, dir, .{ .iterate = true });
+    var count: usize = 0;
+    var has_04 = false;
+    var has_noise = false;
+    var it = dir_h.iterate();
+    while (it.next(io) catch null) |e| {
+        if (e.kind != .file) continue;
+        count += 1;
+        if (std.mem.eql(u8, e.name, "1790000000004.jsonl")) has_04 = true;
+        if (std.mem.eql(u8, e.name, "1790000000005.jsonl")) has_04 = true;
+        if (std.mem.eql(u8, e.name, "noise.txt")) has_noise = true;
+    }
+    dir_h.close(io);
+    try std.testing.expectEqual(@as(usize, 3), count); // 2 jsonl + noise
+    try std.testing.expect(has_04); // 留的是最新两份
+    try std.testing.expect(has_noise);
+    // 空目录/不存在目录:no-op 不炸。
+    try std.testing.expectEqual(@as(usize, 0), pruneTraces(io, ".zig-cache/t1-nonexistent", 2, a));
+}
+
 test "trace jsonl carries per-step durations" {
     const a = std.testing.allocator;
     // init takes ownership of `query` (deinit frees it) — dupe, matching
