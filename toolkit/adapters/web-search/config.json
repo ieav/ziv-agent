@@ -1,0 +1,13 @@
+{
+  "scraper": "/Users/ieav/projects/Interest_v/search/search_scraper.py",
+  "python": "/Users/ieav/projects/Interest_v/search/.venv/bin/python",
+  "engines": ["duckduckgo", "bing", "google"],
+  "default_engine": "duckduckgo",
+  "default_num": 10,
+  "max_num": 20,
+  "timeout_s": 45,
+  "min_interval_s": 5,
+  "max_queue_wait_s": 20,
+  "proxy": null,
+  "snippet_chars": 300
+}

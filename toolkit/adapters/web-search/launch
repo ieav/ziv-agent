@@ -1,0 +1,27 @@
+#!/bin/sh
+# ziv MCP launcher for the web-search adapter.
+#
+# ~/.config/ziv/mcp.json references this file by ABSOLUTE path:
+#   {"mcpServers": {"websearch": {"command": "/abs/path/to/toolkit/adapters/web-search/launch"}}}
+#
+# Everything below is an absolute path on purpose: ziv resolves bare command
+# names against Zig's default PATH (/usr/local/bin:/bin:/usr/bin), not the
+# user's PATH — a bare "python3" or "uv" would not be found.
+ADAPTER_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Interpreter that has the search tool's dependencies. Falls back to the
+# Homebrew interpreter, which also works through the tool's vendored packages.
+PYTHON="/Users/ieav/projects/Interest_v/search/.venv/bin/python"
+[ -x "$PYTHON" ] || PYTHON="/opt/homebrew/bin/python3.14"
+
+# stdout is the MCP protocol channel. ziv discards this process's stderr, so
+# send it to a file: only pre-logging failures land here (a bad interpreter, a
+# syntax error); the server itself logs to ~/.cache/ziv/adapters/websearch.log.
+# ziv restarts the server on every launch, so a failure that repeats would
+# grow the file without bound — start over once it passes 64 KiB.
+LOG="${TMPDIR:-/tmp}/ziv-websearch.bootstrap.log"
+if [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 65536 ]; then
+    : > "$LOG"
+fi
+
+exec "$PYTHON" "$ADAPTER_DIR/server.py" 2>>"$LOG"
