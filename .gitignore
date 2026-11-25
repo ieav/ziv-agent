@@ -2,3 +2,6 @@
 # never versioned. agent/.gitignore covers agent/.ziv; this covers the root.
 .ziv/
 .DS_Store
+
+# Claude Code local settings (permissions allow-list) — machine-local, never versioned.
+.claude/
